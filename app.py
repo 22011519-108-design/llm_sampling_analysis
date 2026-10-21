@@ -8,7 +8,20 @@ st.set_page_config(page_title="LLM Sampling Analyzer", layout="wide")
 
 # Hosted models (Groq) used when a GROQ_API_KEY secret is set, e.g. on Streamlit Cloud.
 # Locally, without the secret, the app talks to Ollama as before.
-HOSTED_MODELS = {"llama3.1": "llama-3.1-8b-instant", "qwen2.5": "qwen/qwen3.8-27b"}
+# Groq's free plan no longer serves Llama, so the hosted list uses its free replacements.
+HOSTED_MODELS = {
+    "Qwen 3.8 27B (qwen/qwen3.8-27b)": "qwen/qwen3.8-27b",
+    "GPT-OSS 20B (openai/gpt-oss-20b)": "openai/gpt-oss-20b",
+}
+# Free-plan output-token budget per minute, shared across all runs of one experiment.
+HOSTED_TOKEN_BUDGET = 900
+
+
+def hosted_extra_params(model):
+    # Keep reasoning short so tokens go to the visible answer.
+    if model.startswith("qwen/"):
+        return {"reasoning_effort": "none"}
+    return {"reasoning_effort": "low", "include_reasoning": False}
 
 
 def get_secret(name):
@@ -25,7 +38,8 @@ st.title("🔬 LLM Decoding Parameter & Sampling Analysis")
 st.markdown("Evaluate how **Temperature**, **Top-K**, and **Top-P** impact local LLMs (Llama 3.1, Qwen 2.5).")
 
 st.sidebar.header("Controls")
-model_choice = st.sidebar.selectbox("Model", ["llama3.1", "qwen2.5"])
+model_options = list(HOSTED_MODELS) if hosted_client else ["llama3.1", "qwen2.5"]
+model_choice = st.sidebar.selectbox("Model", model_options)
 temperature = st.sidebar.slider("Temperature", 0.0, 1.5, 0.7, 0.1)
 top_k = st.sidebar.slider("Top-K", 1, 100, 40, 1)
 top_p = st.sidebar.slider("Top-P", 0.1, 1.0, 0.9, 0.05)
@@ -38,7 +52,10 @@ if st.button("Run Live Experiment"):
         outputs = []
         if hosted_client:
             hosted_model = HOSTED_MODELS[model_choice]
-            st.caption(f"Running on hosted model `{hosted_model}` via Groq. Top-K isn't supported by the hosted API, so it's ignored here.")
+            st.caption(
+                f"Running on hosted model `{hosted_model}` via Groq's free plan. Llama isn't available there, "
+                "and Top-K isn't supported by the hosted API, so it's ignored here."
+            )
             try:
                 with st.spinner("Generating responses..."):
                     for _ in range(runs):
@@ -47,10 +64,15 @@ if st.button("Run Live Experiment"):
                             messages=[{"role": "user", "content": user_prompt}],
                             temperature=temperature,
                             top_p=top_p,
+                            max_completion_tokens=HOSTED_TOKEN_BUDGET // runs,
+                            extra_body=hosted_extra_params(hosted_model),
                         )
-                        outputs.append(res.choices[0].message.content)
+                        outputs.append(res.choices[0].message.content or "_(No answer: hit the length limit for this run.)_")
             except Exception as e:
-                st.error(f"The hosted model request failed: {e}")
+                if getattr(e, "status_code", None) == 429:
+                    st.warning("Groq's free plan allows only a few answers per minute. Wait a minute and try again, or use fewer runs.")
+                else:
+                    st.error(f"The hosted model request failed: {e}")
         else:
             try:
                 with st.spinner("Generating responses..."):
